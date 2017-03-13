@@ -1,0 +1,34 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ui="http://java.sun.com/jsf/facelets"
+      xmlns:f="http://java.sun.com/jsf/core"
+      xmlns:h="http://java.sun.com/jsf/html"> 
+
+<h:head></h:head> 
+<body> 
+	<h:form>
+		<h:panelGrid columns="2">
+			<h:outputLabel value="Nombre: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuNomUsu}" required="true"/>
+			
+			<h:outputLabel value="Apellido: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuApeUsu}" required="true"/>
+			
+			<h:outputLabel value="Cedula: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuCedUsu}" required="true"/>
+			
+			<h:outputLabel value="Correo: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuCorUsu}" required="true"/>
+			
+			<h:outputLabel value="Telefono: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuTelUsu}" required="true"/>
+			
+			<h:outputLabel value="Direccion: " />
+			<h:inputText value="#{usuariosMb.usuarioARegistrar.usuDirUsu}" required="true"/>
+			
+			<h:commandButton action="#{usuariosMb.crearUsuario()}" value="Crear" proces="@form" />
+			
+		</h:panelGrid>
+	</h:form>
+</body> 
+</html>

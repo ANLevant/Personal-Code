@@ -1,0 +1,33 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"> 
+<html xmlns="http://www.w3.org/1999/xhtml"
+      xmlns:ui="http://java.sun.com/jsf/facelets"
+      xmlns:f="http://java.sun.com/jsf/core"
+      xmlns:h="http://java.sun.com/jsf/html"> 
+
+<h:head></h:head> 
+<body> 
+	<h:dataTable value="#{usuariosMb.usuariosEncontrados}" var="usuario">
+		<h:column>
+			<h:outputText value="#{usuario.usuId}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuApeUsu}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuNomUsu}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuCedUsu}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuCorUsu}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuTelUsu}" />
+		</h:column>
+		<h:column>
+			<h:outputText value="#{usuario.usuDirUsu}" />
+		</h:column>
+	</h:dataTable>
+</body> 
+</html>
