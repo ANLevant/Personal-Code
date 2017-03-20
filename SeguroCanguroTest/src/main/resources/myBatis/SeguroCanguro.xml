@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+    PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+ 
+<mapper namespace="com.seguro.canguro.test.mapper.eguroCanguroTestMapper>
+ 
+    <resultMap id="SeguroCanguroResultMap" type="Hashmap">
+        <result column="Sample_Data_Title" property="title" />
+        <result column="Sample_Data_Value" property="value" />
+    </resultMap>
+ 
+    <select id="findAllTestData" resultMap="UserResultMap">
+        select * from HR.Sample_Data
+    </select>
+ 
+</mapper>
