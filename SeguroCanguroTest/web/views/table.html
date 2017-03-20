@@ -1,7 +1,8 @@
-<html ng-app>
+<html ng-app="SeguroCanguro">
 <head>
   <!-- ThirdPartyLibraries -->
   <script src="../node_modules/angular/angular.js"></script>
+  <script src="../node_modules/angular-resource/angular-resource.js"></script>
 
   <!-- Configuration JS -->
   <script src="../javascript/config/app.js"></script>
@@ -12,12 +13,22 @@
   <!-- Controller JS -->
   <script src="../javascript/controller/VSeguroCanguroController.js"></script>
 
-</head>
-<body ng-controller="vSeguroCanguroController as controller">>
+  <!-- Util JS -->
+  <script src="../javascript/util/VSeguroCanguroConstants.js"></script>
 
-  <div
-    <p>{{controller.works}}</p>
-  </div>
+</head>
+<body ng-controller="vSeguroCanguroController as controller">
+
+    <table>
+      <thead>
+        <th>Name</th>
+        <th>Value</th>
+      </thead>
+      <tr ng-repeat="data in controller.tableData track by $index">
+        <td>{{data.sample_data_title}}</td>
+        <td>{{data.sample_data_value}}</td>
+      </tr>
+    </table>
 
 </body>
 </html>

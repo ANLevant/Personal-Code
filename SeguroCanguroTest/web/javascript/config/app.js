@@ -1,1 +1,1 @@
-var SeguroCanguro = angular.module('SeguroCanguro', []);
+var SeguroCanguro = angular.module('SeguroCanguro', ['ngResource']);

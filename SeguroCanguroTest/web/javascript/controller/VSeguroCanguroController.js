@@ -1,4 +1,10 @@
-  angular.module('SeguroCanguro').controller('vSeguroCanguroController', function(VSeguroCanguroService, $scope){
-  this.work = 'yes!!!';
-  $scope.works = 'yes!!!';
+SeguroCanguro.controller('vSeguroCanguroController', function(vSeguroCanguroService){
+
+  that = this;
+
+  vSeguroCanguroService.getListRequest().fetchData(function(data){
+        that.tableData = data;
+  });
+
+  this.works = 'yes!!!';
 });
