@@ -1,0 +1,23 @@
+<html ng-app="RappiTest">
+
+  <head>
+    <!-- External-->
+    <script src="node_modules/angular/angular.js"></script>
+
+    <!-- Config -->
+    <script src="js/config/app.js"></script>
+    <script src="js/config/run.js"></script>
+
+    <!-- Controllers-->
+    <script src="js/controller/RappiController.js"></script>
+
+  </head>
+  <body ng-controller="RappiController as rappiController">
+    <input type="number" ng-model="rappiController.testCases"/>
+
+      <div ng-repeat="testCase in rappiController.getTestCases() track by $index">
+        <input type="number"/>
+      </div>
+  </body>
+
+</html>
