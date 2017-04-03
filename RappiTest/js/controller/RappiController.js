@@ -29,7 +29,8 @@ angular.module('RappiTest').controller('RappiController',function(){
       }
     }
 
-    return sum;
+    return;
+
 
   };
 
