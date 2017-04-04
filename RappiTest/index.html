@@ -13,11 +13,17 @@
 
   </head>
   <body ng-controller="RappiController as rappiController">
-    <input type="number" ng-model="rappiController.testCases"/>
 
-      <div ng-repeat="testCase in rappiController.getTestCases() track by $index">
-        <input type="number"/>
-      </div>
+    <form id="form" name="form">
+      <span>T</span>
+      <input type="number" ng-model="rappiController.testCases" ng-change="rappiController.calculateTestCases()" />
+
+        <div ng-repeat="testCase in rappiController.T.testCases track by $index">
+          <input id="T_{{$index}}" name="T_{{$index}}" type="text" ng-change="rappiController.validateT($index)" ng-model="rappiController.T.testCases[$index].value"/>
+          <span ng-if="!testCase.isValid">Entrada no valida</span>
+        </div>
+    </form>
+
   </body>
 
 </html>
