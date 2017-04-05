@@ -14,14 +14,39 @@
   </head>
   <body ng-controller="RappiController as rappiController">
 
-    <form id="form" name="form">
+    <div ng-repeat="output in rappiController.output track by $index">
+      <span>{{output}}</span>
+    </div>
+
+    <form id="form" name="form" ng-submit="rappiController.solve()">
       <span>T</span>
-      <input type="number" ng-model="rappiController.testCases" ng-change="rappiController.calculateTestCases()" />
+      <input type="number"
+             ng-model="rappiController.testCases"
+             ng-change="rappiController.calculateTestCases()"
+             required="true"/>
 
         <div ng-repeat="testCase in rappiController.T.testCases track by $index">
-          <input id="T_{{$index}}" name="T_{{$index}}" type="text" ng-change="rappiController.validateT($index)" ng-model="rappiController.T.testCases[$index].value"/>
+          <input id="T_{{$index}}" name="T_{{$index}}"
+                 type="text" ng-change="rappiController.validateT($index)"
+                 ng-model="rappiController.T.testCases[$index].value"
+                 required = true/>
           <span ng-if="!testCase.isValid">Entrada no valida</span>
         </div>
+
+        <div ng-repeat="testCase in rappiController.M track by $index">
+          Movements for {{$index + 1}} test case
+          <div ng-repeat="movement in testCase track by $index">
+            <input id="T_{{$parent.$index}}_M_{{$index}}"
+                   name="T_{{$parent.$index}}_M_{{$index}}" type="text"
+                   ng-change="rappiController.validateMovement({{$parent.$index}}, {{$index}})"
+                   ng-model="rappiController.M[$parent.$index][$index].movement"
+                   required = true/>
+            <span ng-if="!rappiController.M[$parent.$index][$index].isValid">Entrada no valida</span>
+          </div>
+        </div>
+
+        <input type="submit" id="submit" value="Resolver"  />
+
     </form>
 
   </body>
