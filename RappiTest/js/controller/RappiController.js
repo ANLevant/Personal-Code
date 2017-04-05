@@ -193,10 +193,14 @@ angular.module('RappiTest').controller('RappiController',function($scope){
 
     var sum = 0;
 
-    for(startX; startX <= endX; startX++){
-      for(startY; startY <= endY; startY++){
-        for(startZ; startZ <= endZ; startZ++){
-          sum += that.threeDMatrix[testCase][startX][startY][startZ];
+    var i = startX;
+    var j = startY;
+    var k = startZ;
+
+    for(i = startX; i <= endX; i++){
+      for(j = startY; j <= endY; j++){
+        for(k = startZ; k <= endZ; k++){
+          sum += that.threeDMatrix[testCase][i][j][k];
         }
       }
     }
