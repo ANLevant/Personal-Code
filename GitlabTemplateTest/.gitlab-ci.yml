@@ -28,6 +28,8 @@ variables:
   ECR_HOST_PUSH: "889199535989.dkr.ecr.us-east-1.amazonaws.com"
   ECR_REPOSITORY: "ips-token/tokenization-service"
   MAVEN_CLI_OPTS: --batch-mode # Shared maven client options
+  MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2"
+  SONAR_MAVEN_PLUGIN_VERSION: "3.6.0.1398"
 
   # Target folders where tools generate content
   TARGET_APP_JAR_DIRECTORY: ${CI_PROJECT_DIR}/${CI_PIPELINE_ID}/target/jar
@@ -373,6 +375,19 @@ maven clean package:
     paths:
       - ${TARGET_APP_JAR_DIRECTORY}/app.jar
 
+sonar:
+  stage: package
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *release_and_dry_run_pipeline
+  variables:
+    SONAR_HOST: https://sonarqube.nonprod.tmaws.eu
+  script:
+    - mvn ${MAVEN_CLI_OPTS} clean test
+    - mvn ${MAVEN_CLI_OPTS} org.sonarsource.scanner.maven:sonar-maven-plugin:${SONAR_MAVEN_PLUGIN_VERSION}:sonar -Dsonar.projectVersion=$VERSION-$CI_PIPELINE_ID-$CI_COMMIT_REF_NAME -Dsonar.host.url=${SONAR_HOST}
+  <<: *after_script_purge_maven_cache
+  allow_failure: true
+
 plan bdd:
   stage: package
   <<: *tags_terraform_nonprod
@@ -409,7 +424,16 @@ plan prod:
     - cd terraform
     - terraformer tm-intl-pci/prod1-de plan
 
-plan test:
+plan test ie:
+  stage: package
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *dev_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-ie plan
+
+plan test de:
   stage: package
   <<: *tags_terraform_nonprod
   <<: *image_terraformer
@@ -417,6 +441,7 @@ plan test:
   script:
     - cd terraform
     - terraformer tm-intl-dev/test1-de plan
+  when: manual
 
 setup DB bdd:
   stage: package
@@ -495,20 +520,6 @@ apply gatling:
     - cd terraform/terraform-gatling
     - echo "terraformer tm-intl-pci/captest1-ie apply -auto-approve -var simulation_name=${CAPTEST_SIMULATION} -var gitlab_var_active_region=ie -var gitlab_ref=${CI_COMMIT_REF_NAME} -var gitlab_var_env=${CAPTEST_ENV} -var gatling_users=${CAPTEST_USERS} -var gatling_duration=${CAPTEST_DURATION} -var gatling_add_java_opts=${CAPTEST_ADD_JAVA_OPTS}"
     - terraformer tm-intl-pci/captest1-ie apply -auto-approve -var simulation_name=${CAPTEST_SIMULATION} -var gitlab_var_active_region=ie -var gitlab_ref=${CI_COMMIT_REF_NAME} -var gitlab_var_env=${CAPTEST_ENV} -var gatling_users=${CAPTEST_USERS} -var gatling_duration=${CAPTEST_DURATION} -var gatling_add_java_opts=${CAPTEST_ADD_JAVA_OPTS}
-
-# TODO IPS-2837 reactivate this, also upgrade to new endpoint
-#sonar:
-#  stage: code validation
-#  <<: *tags_cicd
-#  <<: *image_maven
-#  <<: *release_and_dry_run_pipeline
-#  variables:
-#    SONAR_HOST: http://sonar.tmaws.io
-#  script:
-#    - echo "Running Sonar and publishing results..."
-#    - "echo SONAR_HOST: ${SONAR_HOST}"
-#    - mvn ${MAVEN_CLI_OPTS} ${MAVEN_OPTS} clean test sonar:sonar -Dsonar.host.url=${SONAR_HOST}
-#  <<: *after_script_purge_maven_cache
 
 veracode:
   stage: code validation
@@ -635,6 +646,7 @@ setup DB test de:
     - jana -envPath tm-intl-dev/test1-de -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
     - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
     - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+  when: manual
 
 setup DB prod ie:
   stage: DB setup
@@ -667,6 +679,7 @@ apply test de:
   script:
     - cd terraform
     - terraformer tm-intl-dev/test1-de apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+  when: manual
 
 apply prod ie:
   stage: apply env
