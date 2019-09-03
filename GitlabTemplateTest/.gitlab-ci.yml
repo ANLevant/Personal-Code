@@ -1,0 +1,970 @@
+stages:
+  - pre
+  - setup
+  - package
+  - containerize
+  - apply testing env
+  - code validation
+  - promote build
+  - DB setup
+  - apply env
+  - branch1-ie
+  - branch1-de
+  - destroy
+  - release lock
+  - delete DB schema
+  
+#A global cache that permit every jobs to get their dependencies locally in the pipeline
+cache:
+  key: "$CI_BUILD_REF_NAME"
+  untracked: false
+  paths:
+    - .m2/
+    - .aws/
+
+variables:
+  # Pipeline variables
+  ECR_HOST: "tmhub.io"
+  ECR_HOST_PUSH: "889199535989.dkr.ecr.us-east-1.amazonaws.com"
+  ECR_REPOSITORY: "ips-token/tokenization-service"
+  MAVEN_CLI_OPTS: --batch-mode # Shared maven client options
+  MAVEN_OPTS: "-Dmaven.repo.local=${CI_PROJECT_DIR}/.m2"
+  SONAR_MAVEN_PLUGIN_VERSION: "3.6.0.1398"
+  
+  # Target folders where tools generate content
+  TARGET_APP_JAR_DIRECTORY: ${CI_PROJECT_DIR}/${CI_PIPELINE_ID}/target/jar
+  TARGET_CHANGELOG_DIRECTORY: ${CI_PROJECT_DIR}/${CI_PIPELINE_ID}/target/changelog
+  TARGET_SHARED_BUILD_PIPELINE_SCRIPTS: ${CI_PROJECT_DIR}/${CI_PIPELINE_ID}/bin
+  TARGET_SHARED_BUILD_PIPELINE_SSH: ${CI_PROJECT_DIR}/${CI_PIPELINE_ID}/ssh
+  
+  # Project variables
+  JANA_ECR_REPOSITORY: "ips-token/ips-tokenization-jana"
+  FLYWAY_WORKING_DIRECTORY: ${CI_PROJECT_DIR}/tokenization-flyway/src/main/resources
+  S3_PROJECT_NAME: "token"
+  S3_IPS_DOCUMENTATION_BUCKET_NAME: "prd322.token.test1-ie.eu-west-1.tmaws-ips-documentation"
+  SSH_REMOTE_URL: git@git.tmaws.io:ips-team/tokenization/ips-token.git
+
+  # Maven Verify variables for BDD, Gateway must be in the first position, and lookup in the second one
+  BDD_IT_ENDPOINT: "https://bdd1-ie-app-token.token.nonprod.tmaws.eu/api/v0,https://bdd1-ie-app-lookup.token.nonprod.tmaws.eu:8443/api/v0"
+
+  # CAPTEST
+  CAPTEST_MODE: none # Controls the mode of execution for Gatling. One of "inline", "first", "standalone", "destroy", "none" 
+  # "inline" will run only with release or dryrun pipeline. "first" will create the captest environment and run the gatling after, "standalone" will 
+  # run only captests. "destroy" is executed when called back, as the ending step, "none" (or any other value) will not execute any part of captesting
+  CAPTEST_ENV: destroy # One of "destroy", "alwaysup". "alwaysup" will leave the captest environment up after execution instead of destroying it
+  CAPTEST_SIMULATION: TokenizationSimulation # Name of the simulation that will be called on Gatling
+  CAPTEST_USERS: 1250 # Number of users (translates to calls). NOTE: this is for EACH gatling instance, thus multiplied by 2 in current setup
+  CAPTEST_DURATION: 120s # Duration of simulation. Number of calls/sec (approximate) is: users multiplied by number of gatling instances, divided by duration.
+  CAPTEST_ADD_JAVA_OPTS: -Dempty # Any additional options to pass to Gatling. This should be formation as usual, for example: -Dcaptest.tokenization.adyenLatency=5s -Dcaptest.tokenization.accertifyLatency=5s
+  WAF_DATE_PATH: not_set # If you want to download logs for a specific folder, set the path here. E.g: 2019/05/01 will download all files for May 1st. 2019/05 will download all log files for may.
+
+### Pipeline templates ###
+# Note: No pipeline templates will run on git tags
+# Warning: Don't leave any job without a Pipeline anchor!
+.template: &any_and_captest_exec_pipeline
+  except:
+    variables:
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &any_and_captest_setup_pipeline
+  except:
+    variables:
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &release_pipeline
+  only:
+    refs:
+    - release
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &release_and_dry_run_pipeline
+  only:
+    refs:
+    - release
+    - /^.*dryrun$/
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &any_but_captest_pipeline
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &master_pipeline
+  only:
+    refs:
+    - master
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+.template: &dev_pipeline
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+    - release
+    - /^.*dryrun$/
+.template: &feature_pipeline
+  except:
+    variables:
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+    - $CAPTEST_MODE == "destroy"
+    refs:
+    - tags
+    - master-to-release
+    - release    
+    - /^.*dryrun$/
+    - master
+.template: &captest_setup_pipeline
+  only:
+    refs:
+    - release
+    - /^.*dryrun$/
+    variables:
+    - $CAPTEST_MODE == "inline"
+    - $CAPTEST_MODE == "first"
+.template: &captest_exec_pipeline
+  only:
+    refs:
+    - release
+    - /^.*dryrun$/
+    variables:
+    - $CAPTEST_MODE == "inline"
+    - $CAPTEST_MODE == "first"
+    - $CAPTEST_MODE == "standalone"
+.template: &captest_destroy_pipeline
+  only:
+    variables:
+    - $CAPTEST_MODE == "destroy"
+  except:
+    variables:
+    - $CAPTEST_ENV == "alwaysup"
+
+### Tags templates ###
+# More information about IPS runners:
+# https://git.tmaws.io/mfx-aws/gitlab-cicd-runner
+# Warning: All job must have a Tag anchor!
+.template: &tags_ips_nonprod
+  tags:
+    - tm-intl-dev
+    - token-cicd
+    - nonprod1
+.template: &tags_ips_nonprod_ie
+  tags:
+    - tm-intl-dev
+    - token-cicd
+    - nonprod1
+    - ie
+.template: &tags_ips_nonprod_de
+  tags:
+    - tm-intl-dev
+    - token-cicd
+    - nonprod1
+    - de
+.template: &tags_terraform_nonprod
+  tags:
+    - tm-intl-dev terraformer
+.template: &tags_cicd
+  tags:
+    - tm-prod cicd build
+.template: &tags_terraform_pci
+  tags:
+    - tm-intl-pci terraformer
+.template: &tags_ips_preprod_ie
+  tags:
+    - tm-intl-pci
+    - token-cicd
+    - captest1
+    - ie
+.template: &tags_ips_preprod_de
+  tags:
+    - tm-intl-pci
+    - token-cicd
+    - captest1
+    - de
+.template: &tags_ips_prod_ie
+  tags:
+    - tm-intl-pci
+    - token-cicd
+    - prod1
+    - ie
+.template: &tags_ips_prod_de
+  tags:
+    - tm-intl-pci
+    - token-cicd
+    - prod1
+    - de       
+
+### Docker images templates ###
+.template: &image_maven
+  image: $ECR_HOST/maven/maven:3.3.9-openjdk11.0.1
+  before_script:
+    - if [ -f ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh ]; then . ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh; echo "ok"; fi
+    - mkdir ~/.ssh
+    - cp ${TARGET_SHARED_BUILD_PIPELINE_SSH}/* ~/.ssh
+    - chmod 600 ~/.ssh/maven-release
+  variables:
+    # Make sure we are re-using the same maven repo cache between jobs within this instance of pipeline
+    MAVEN_OPTS: -Dmaven.repo.local=${CI_PROJECT_DIR}/.m2
+# For daux and spectacle job, refer to https://contegixapp1.livenation.com/confluence/display/INPS/How+to+upload+Docker+Image+on+Dockerhub
+.template: &image_daux # Integration documentation with MD files
+  image: $ECR_HOST/ips-tools/daux:1.1.1
+.template: &image_spectacle # API documentation with swagger file
+  image: $ECR_HOST/ips-tools/spectacle:1.0.0
+.template: &image_swagger_diff_changelog
+  image: $ECR_HOST/ips-tools/swagger-diff-changelog:1.0.0
+.template: &image_aws_us
+  image: $ECR_HOST/aws/aws-cli:1.11.87
+  variables:
+    AWS_DEFAULT_REGION: us-east-1
+.template: &image_docker
+  image: "docker:stable"
+.template: &image_terraformer
+  image:
+    name: $ECR_HOST/ticketmaster/terraformer:0.11.8_cd
+    entrypoint: [""]
+.template: &image_shared_scripts
+  image: $ECR_HOST/ips/shared-scripts:7.9.2
+.template: &image_flyway
+  image: $ECR_HOST/dba/docker-db-migration:flyway5
+
+.template: &after_script_purge_maven_cache
+  after_script:
+    # sourceEnvVariables.sh is created dynamically by job "create environment variables sourcing"
+    - if [ -f ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh ]; then . ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh; echo "ok"; fi
+    - echo "Purging project artifacts from .m2 folder"
+    - jobPurgeMavenGroupId -mavenRepoLocal "${CI_PROJECT_DIR}/.m2" -pomPath "pom.xml"
+
+### Before script ###
+# Warning: If you override the before_script in your job, the main one won't execute.
+before_script:
+  - echo "before_script"
+  # sourceEnvVariables.sh is created dynamically by job "create environment variables sourcing"
+  - if [ -f ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh ]; then . ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh; echo "ok"; fi
+
+### Jobs ###
+
+# STAGE: setup
+download waf logs:
+  stage: setup
+  <<: *tags_ips_prod_de
+  <<: *image_aws_us
+  <<: *any_and_captest_setup_pipeline
+  script:
+    - if [ $WAF_DATE_PATH == "not_set" ]; then export WAF_DATE_PATH=$(date +"%Y/%m/%d") ; fi
+    - echo "$WAF_DATE_PATH"
+    - echo "aws s3 cp s3://prd322.tm-intl-pci.token.prod1-de.eu-central-1.tmaws/${WAF_DATE_PATH} ${CI_PROJECT_DIR}/waf_logs/${WAF_DATE_PATH} --region eu-central-1 --recursive"
+    - aws s3 cp s3://prd322.tm-intl-pci.token.prod1-de.eu-central-1.tmaws/${WAF_DATE_PATH} ${CI_PROJECT_DIR}/waf_logs/${WAF_DATE_PATH} --region eu-central-1 --recursive
+  <<: *after_script_purge_maven_cache  
+  when: manual
+  artifacts:
+    expire_in: 8 hour
+    paths:
+      - ${CI_PROJECT_DIR}/waf_logs
+
+prepare pipeline:
+  stage: setup
+  <<: *tags_ips_nonprod
+  <<: *image_shared_scripts
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - echo "download scripts"
+    - /opt/shared_scripts/bin/installScripts ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}
+     # Get Jana
+    - wget -qO- http://maven.platform.tm.tmcs:8081/nexus/content/repositories/releases/com/ticketmaster/cet/jana/jana.tar.gz | tar xvz -C ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}
+    - echo "download ssh configuration"
+    - /opt/shared_scripts/bin/installSSH ${TARGET_SHARED_BUILD_PIPELINE_SSH}
+    - echo "create environment variables sourcing"
+    # Create dynamically the sourceEnvVariables.sh that will be used in before_script
+    - /opt/shared_scripts/bin/setupVersionVariables -pomFilePath pom.xml -sourcingScriptFilePath ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh
+    - /opt/shared_scripts/bin/setupPathVariable -sourcingScriptFilePath ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}/sourceEnvVariables.sh
+    - echo "list content root"
+    - ls -Rl ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}
+    - ls -Rl ${TARGET_SHARED_BUILD_PIPELINE_SSH}
+    - echo "info variables"
+    # Gitlab variables
+    - "echo CI_COMMIT_REF_NAME: ${CI_COMMIT_REF_NAME}"
+    - "echo CI_COMMIT_REF_SLUG: ${CI_COMMIT_REF_SLUG}"
+    - "echo CI_COMMIT_SHA: ${CI_COMMIT_SHA}"
+    - "echo CI_COMMIT_TAG: ${CI_COMMIT_TAG}"
+    # Pipeline variables
+    - "echo ECR_HOST: ${ECR_HOST}"
+    - "echo ECR_HOST_PUSH: ${ECR_HOST_PUSH}"
+    - "echo ECR_REPOSITORY: ${ECR_REPOSITORY}"
+    - "echo MAVEN_CLI_OPTS: ${MAVEN_CLI_OPTS}"
+    # Target folders
+    - "echo TARGET_APP_JAR_DIRECTORY: ${TARGET_APP_JAR_DIRECTORY}"
+    - "echo TARGET_CHANGELOG_DIRECTORY: ${TARGET_CHANGELOG_DIRECTORY}"
+    - "echo TARGET_SHARED_BUILD_PIPELINE_SCRIPTS: ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}"
+    - "echo TARGET_SHARED_BUILD_PIPELINE_SSH: ${TARGET_SHARED_BUILD_PIPELINE_SSH}"
+    # Project variables
+    - "echo JANA_ECR_REPOSITORY: ${JANA_ECR_REPOSITORY}"
+    - "echo FLYWAY_WORKING_DIRECTORY: ${FLYWAY_WORKING_DIRECTORY}"    
+    - "echo S3_PROJECT_NAME: ${S3_PROJECT_NAME}"
+    - "echo S3_IPS_DOCUMENTATION_BUCKET_NAME: ${S3_IPS_DOCUMENTATION_BUCKET_NAME}"
+    - "echo SSH_REMOTE_URL: ${SSH_REMOTE_URL}"
+    # Captests variable
+    - "echo CAPTEST_MODE: ${CAPTEST_MODE}"
+    - "echo CAPTEST_ENV: ${CAPTEST_ENV}"
+    - "echo CAPTEST_SIMULATION: ${CAPTEST_SIMULATION}"
+    - "echo CAPTEST_USERS: ${CAPTEST_USERS}"
+    - "echo CAPTEST_DURATION: ${CAPTEST_DURATION}"
+    - "echo CAPTEST_ADD_JAVA_OPTS"
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - ${TARGET_SHARED_BUILD_PIPELINE_SCRIPTS}
+      - ${TARGET_SHARED_BUILD_PIPELINE_SSH}
+      
+# STAGE: package
+setup aws cli:
+  stage: package
+  <<: *tags_ips_nonprod
+  <<: *image_aws_us
+  <<: *release_and_dry_run_pipeline
+  script:
+    - jobSetupAwsCli -awsConfigDirectory ${CI_PROJECT_DIR}/.aws
+  artifacts:
+    expire_in: 8 hour
+    paths:
+      - ${CI_PROJECT_DIR}/.aws
+
+maven clean package:
+  stage: package
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *any_and_captest_setup_pipeline
+  script:
+    # Compile java and rename application jar for docker to cache it
+    - mvn ${MAVEN_CLI_OPTS} ${MAVEN_OPTS} clean package
+    - mkdir -p ${TARGET_APP_JAR_DIRECTORY}
+    - mv tokenization-service/target/tokenization-service-${ARTIFACT_VERSION}.jar ${TARGET_APP_JAR_DIRECTORY}/app.jar
+  <<: *after_script_purge_maven_cache
+  artifacts:
+    expire_in: 8 hour
+    paths:
+      - ${TARGET_APP_JAR_DIRECTORY}/app.jar
+
+sonar:
+  stage: package
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *release_and_dry_run_pipeline
+  variables:
+    SONAR_HOST: https://sonarqube.nonprod.tmaws.eu
+  script:
+    - mvn ${MAVEN_CLI_OPTS} clean test
+    - mvn ${MAVEN_CLI_OPTS} org.sonarsource.scanner.maven:sonar-maven-plugin:${SONAR_MAVEN_PLUGIN_VERSION}:sonar -Dsonar.projectVersion=$VERSION-$CI_PIPELINE_ID-$CI_COMMIT_REF_NAME -Dsonar.host.url=${SONAR_HOST}
+  <<: *after_script_purge_maven_cache
+  allow_failure: true
+
+plan bdd:
+  stage: package
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *release_and_dry_run_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/bdd1-ie plan
+
+plan captest:
+  stage: package
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_setup_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/captest1-ie plan
+  
+plan gatling:
+  stage: package
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_setup_pipeline
+  script:
+    - cd terraform/terraform-gatling
+    - terraformer tm-intl-pci/captest1-ie plan
+
+plan prod:
+  stage: package
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_but_captest_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/prod1-de plan
+
+plan test ie:
+  stage: package
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *dev_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-ie plan
+
+plan test de:
+  stage: package
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *dev_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-de plan
+  when: manual
+
+setup DB bdd:
+  stage: package
+  <<: *tags_ips_nonprod_ie
+  <<: *image_flyway
+  <<: *release_and_dry_run_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/bdd1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+  
+setup DB captest:
+  stage: package
+  <<: *tags_ips_preprod_ie
+  <<: *image_flyway
+  <<: *captest_setup_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-pci-Ops-Techops
+    - jana -envPath tm-intl-pci/captest1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+
+# STAGE: containerize
+
+docker snapshot image:
+  stage: containerize
+  <<: *tags_cicd
+  <<: *image_docker
+  <<: *any_and_captest_setup_pipeline
+  script:
+    - jobCreateApplicationAndJanaDockerImages -gitlabProjectDirectory ${CI_PROJECT_DIR} -projectTargetDirectory tokenization-service/target -gitlabTargetDirectory ${TARGET_APP_JAR_DIRECTORY} -appDockerTag ${ECR_HOST_PUSH}/${ECR_REPOSITORY}:$ARTIFACT_VERSION-$CI_COMMIT_REF_SLUG -appEcrRepository ${ECR_REPOSITORY} -janaDockerTag ${ECR_HOST_PUSH}/${JANA_ECR_REPOSITORY}:$ARTIFACT_VERSION-$CI_COMMIT_REF_SLUG -janaEcrRepository ${JANA_ECR_REPOSITORY}
+
+# STAGE: apply testing env
+
+apply bdd:
+  stage: apply testing env
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *release_and_dry_run_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/bdd1-ie apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+
+apply captest:
+  stage: apply testing env
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_setup_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/captest1-ie apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+
+# STAGE: code validation
+
+maven verify:
+  stage: code validation
+  <<: *tags_ips_nonprod_ie
+  <<: *image_maven
+  <<: *release_and_dry_run_pipeline
+  script:
+  - jobMavenVerify -mavenOptions ${MAVEN_OPTS} -itEndpoint ${BDD_IT_ENDPOINT} -bucket ${S3_IPS_DOCUMENTATION_BUCKET_NAME} -localDirectory tokenization-bdd/target/site/allure-maven-plugin -s3Directory /${S3_PROJECT_NAME}/${RELEASE_PATH}/bdd -awsConfigDirectory ${CI_PROJECT_DIR}/.aws -acl bucket-owner-read
+  <<: *after_script_purge_maven_cache
+  environment:
+    name: test
+    url: https://doc.ips.nonprod.tmaws.eu/${S3_PROJECT_NAME}/${RELEASE_PATH}
+
+apply gatling:
+  stage: code validation
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_exec_pipeline
+  script:
+    - cd terraform/terraform-gatling
+    - echo "terraformer tm-intl-pci/captest1-ie apply -auto-approve -var simulation_name=${CAPTEST_SIMULATION} -var gitlab_var_active_region=ie -var gitlab_ref=${CI_COMMIT_REF_NAME} -var gitlab_var_env=${CAPTEST_ENV} -var gatling_users=${CAPTEST_USERS} -var gatling_duration=${CAPTEST_DURATION} -var gatling_add_java_opts=${CAPTEST_ADD_JAVA_OPTS}"
+    - terraformer tm-intl-pci/captest1-ie apply -auto-approve -var simulation_name=${CAPTEST_SIMULATION} -var gitlab_var_active_region=ie -var gitlab_ref=${CI_COMMIT_REF_NAME} -var gitlab_var_env=${CAPTEST_ENV} -var gatling_users=${CAPTEST_USERS} -var gatling_duration=${CAPTEST_DURATION} -var gatling_add_java_opts=${CAPTEST_ADD_JAVA_OPTS}
+
+veracode:
+  stage: code validation
+  <<: *tags_ips_nonprod
+  <<: *image_docker
+  <<: *release_and_dry_run_pipeline
+  script:
+    - echo "Upload last build to Veracode..."
+    - jobVeracode -appId ${veracode_app_id} -username ${veracode_api_username} -password ${veracode_api_password} -artifact_name tokenization-service.jar -artifact_path ${TARGET_APP_JAR_DIRECTORY}/app.jar -artifact_version ${RELEASE_VERSION}
+  allow_failure: true
+
+# STAGE: promote build
+
+DB snapshot prod ie:
+  stage: promote build
+  <<: *image_aws_us
+  <<: *tags_terraform_pci
+  <<: *release_pipeline
+  script:
+    - jobTakeDatabaseSnapshot --releaseVersion ${RELEASE_VERSION} --dbClusterIdentifier prd322-prod1-ie-sql-token --awsRegion eu-west-1
+
+DB snapshot prod de:
+  stage: promote build
+  <<: *image_aws_us
+  <<: *tags_terraform_pci
+  <<: *release_pipeline
+  script:
+    - jobTakeDatabaseSnapshot --releaseVersion ${RELEASE_VERSION} --dbClusterIdentifier prd322-prod1-de-sql-token --awsRegion eu-central-1
+  
+prepare release pipeline:
+  stage: promote build
+  <<: *image_maven
+  <<: *tags_ips_nonprod
+  <<: *master_pipeline
+  script:
+    - jobPrepareReleasePipeline -sshRemoteUrl ${SSH_REMOTE_URL} -master ${CI_COMMIT_REF_NAME} -branch master-to-release -commit ${CI_COMMIT_SHA}
+    - jobPrepareReleasePipeline -sshRemoteUrl ${SSH_REMOTE_URL} -master ${CI_COMMIT_REF_NAME} -branch dryrun -ciSkip -ciSkipMessage "Prepare dryrun $RELEASE_VERSION-$CI_COMMIT_REF_SLUG" -commit ${CI_COMMIT_SHA}
+
+increment patch number:
+  stage: promote build
+  <<: *image_maven
+  <<: *tags_ips_nonprod
+  <<: *master_pipeline
+  script:
+    - echo jobIncrementPatchNumber -branch ${CI_COMMIT_REF_NAME} -mvnClientOpts ${MAVEN_CLI_OPTS} -mvnOpts ${MAVEN_OPTS} -sshRemoteUrl ${SSH_REMOTE_URL}
+    - jobIncrementPatchNumber -branch ${CI_COMMIT_REF_NAME} -mvnClientOpts ${MAVEN_CLI_OPTS} -mvnOpts ${MAVEN_OPTS} -sshRemoteUrl ${SSH_REMOTE_URL}
+
+increment minor number:
+  stage: promote build
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *master_pipeline
+  script:
+    - echo jobIncrementMinorNumber -branch ${CI_COMMIT_REF_NAME} -mvnClientOpts ${MAVEN_CLI_OPTS} -mvnOpts ${MAVEN_OPTS} -sshRemoteUrl ${SSH_REMOTE_URL}
+    - jobIncrementMinorNumber -branch ${CI_COMMIT_REF_NAME} -mvnClientOpts ${MAVEN_CLI_OPTS} -mvnOpts ${MAVEN_OPTS} -sshRemoteUrl ${SSH_REMOTE_URL}
+  when: manual
+
+maven deploy snapshot:
+  stage: promote build
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *master_pipeline
+  script:
+    - echo "uploading snapshot..."
+    - mvn ${MAVEN_CLI_OPTS} ${MAVEN_OPTS} deploy -DskipTests
+  <<: *after_script_purge_maven_cache
+
+maven release:
+  stage: promote build
+  <<: *tags_ips_nonprod
+  <<: *image_maven
+  <<: *release_pipeline
+  script:
+    - jobMavenRelease -mavenOptions ${MAVEN_OPTS} -branch ${CI_COMMIT_REF_NAME} -sshRemoteUrl ${SSH_REMOTE_URL} -version $RELEASE_VERSION
+  <<: *after_script_purge_maven_cache
+
+docker release image:
+  stage: promote build
+  <<: *tags_cicd
+  <<: *image_docker
+  <<: *release_pipeline
+  script:
+    - jobCreateApplicationAndJanaDockerImages -gitlabProjectDirectory ${CI_PROJECT_DIR} -projectTargetDirectory tokenization-service/target -gitlabTargetDirectory ${TARGET_APP_JAR_DIRECTORY} -appDockerTag ${ECR_HOST_PUSH}/${ECR_REPOSITORY}:$RELEASE_VERSION-$CI_COMMIT_REF_SLUG -appEcrRepository ${ECR_REPOSITORY} -janaDockerTag ${ECR_HOST_PUSH}/${JANA_ECR_REPOSITORY}:$RELEASE_VERSION-$CI_COMMIT_REF_SLUG -janaEcrRepository ${JANA_ECR_REPOSITORY}
+
+destroy bdd:
+  stage: promote build
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *release_and_dry_run_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/bdd1-ie destroy -input=false --force -auto-approve
+  when: manual
+
+destroy captest:
+  stage: promote build
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_destroy_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/captest1-ie destroy -input=false --force -auto-approve
+  when: always
+      
+destroy gatling:
+  stage: promote build
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *captest_destroy_pipeline
+  script:
+    - cd terraform/terraform-gatling
+    - terraformer tm-intl-pci/captest1-ie destroy -input=false --force -auto-approve
+  when: always
+  
+# STAGE: DB setup
+
+setup DB test de:
+  stage: DB setup
+  <<: *tags_ips_nonprod_de
+  <<: *image_flyway
+  <<: *master_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-central-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/test1-de -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+  when: manual
+
+setup DB prod ie:
+  stage: DB setup
+  <<: *tags_ips_prod_ie
+  <<: *image_flyway
+  <<: *release_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-pci-Ops-Techops
+    - jana -envPath tm-intl-pci/prod1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-prod-dataset/
+
+# STAGE apply env
+# We use DE only for now
+apply test ie:
+  stage: apply env
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *master_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-ie apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+  when: manual
+
+apply test de:
+  stage: apply env
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *master_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-de apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+  when: manual
+    
+apply prod ie:
+  stage: apply env
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *release_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/prod1-ie apply -auto-approve -var 'image_version='"${RELEASE_VERSION}-$CI_COMMIT_REF_SLUG"''
+    
+apply prod de:
+  stage: apply env
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *release_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/prod1-de apply -auto-approve -var 'image_version='"${RELEASE_VERSION}-$CI_COMMIT_REF_SLUG"'' 
+
+# STAGE branch1-ie
+
+1.setup DB ie:
+  stage: branch1-ie
+  <<: *tags_ips_nonprod_ie
+  <<: *image_flyway
+  <<: *feature_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/branch1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+  when: manual
+  
+2.apply ie:
+  stage: branch1-ie
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-ie apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+  when: manual
+  
+3.destroy ie:
+  stage: branch1-ie
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-ie destroy --force
+  when: manual
+
+4.release lock ie:
+  stage: branch1-ie
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-ie force-unlock
+  when: manual
+
+5.delete DB schema ie:
+  stage: branch1-ie
+  <<: *tags_ips_nonprod_ie
+  <<: *image_flyway
+  <<: *feature_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/branch1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+  when: manual
+  
+# STAGE branch1-de
+
+1.setup DB de:
+  stage: branch1-de
+  <<: *tags_ips_nonprod_de
+  <<: *image_flyway
+  <<: *feature_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-central-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/branch1-de -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+    - createDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts/
+    - createDataset -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf -scriptDirectories /scripts-test-dataset/
+  when: manual
+
+2.apply de:
+  stage: branch1-de
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-de apply -auto-approve -var 'image_version='"${ARTIFACT_VERSION}-$CI_COMMIT_REF_SLUG"''
+  when: manual
+
+3.destroy de:
+  stage: branch1-de
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-de destroy --force
+  when: manual
+
+4. release lock de:
+  stage: branch1-de
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *feature_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/branch1-de force-unlock
+  when: manual
+
+5.delete DB schema de:
+  stage: branch1-de
+  <<: *tags_ips_nonprod_de
+  <<: *image_flyway
+  <<: *feature_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-central-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/branch1-de -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+  when: manual
+  
+# STAGE destroy
+
+bdd destroy:
+  stage: destroy
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/bdd1-ie destroy -input=false --force -auto-approve
+  when: manual
+
+captest destroy:
+  stage: destroy
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/captest1-ie destroy -input=false --force -auto-approve
+  when: manual
+
+gatling destroy:
+  stage: destroy
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform/terraform-gatling
+    - terraformer tm-intl-pci/captest1-ie destroy -input=false --force -auto-approve
+  when: manual
+
+test ie destroy:
+  stage: destroy
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-ie destroy --force
+  when: manual
+
+test de destroy:
+  stage: destroy
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-de destroy --force
+  when: manual
+  
+protected prod ie destroy:
+  stage: destroy
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/$PROD_ENV-ie destroy --force
+  when: manual
+
+protected prod de destroy:
+  stage: destroy
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/$PROD_ENV-de destroy --force
+  when: manual
+
+# STAGE release lock
+
+bdd release lock:
+  stage: release lock
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/bdd1-ie force-unlock -auto-approve
+  when: manual
+
+captest release lock:
+  stage: release lock
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/captest1-ie force-unlock -auto-approve
+  when: manual
+  
+gatling release lock:
+  stage: release lock
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform/terraform-gatling
+    - terraformer tm-intl-pci/captest1-ie force-unlock -auto-approve
+  when: manual
+
+test ie release lock:
+  stage: release lock
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-ie force-unlock
+  when: manual
+
+test de release lock:
+  stage: release lock
+  <<: *tags_terraform_nonprod
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-dev/test1-de force-unlock
+  when: manual
+  
+prod ie release lock:
+  stage: release lock
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/prod1-ie force-unlock
+  when: manual
+
+prod de release lock:
+  stage: release lock
+  <<: *tags_terraform_pci
+  <<: *image_terraformer
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - cd terraform
+    - terraformer tm-intl-pci/prod1-de force-unlock
+  when: manual
+
+# STAGE delete DB schema
+
+test ie delete DB schema:
+  stage: delete DB schema
+  <<: *tags_ips_nonprod_ie
+  <<: *image_flyway
+  <<: *any_and_captest_exec_pipeline
+  script:
+    - export CONFIG_OUTPUT_FOLDER=${FLYWAY_WORKING_DIRECTORY}; export AWS_REGION=eu-west-1; export AWS_PROFILE=tm-intl-dev-Ops-Techops
+    - jana -envPath tm-intl-dev/test1-ie -gitRepo file://${CI_PROJECT_DIR} -gitBranch ${CI_COMMIT_REF_NAME} -configPath /tokenization-flyway/config -v 2
+    - deleteDbSchema -workingDirectory ${FLYWAY_WORKING_DIRECTORY} -environmentConfigFileName flyway-env.conf
+  when: manual
+
